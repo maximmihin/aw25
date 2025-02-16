@@ -1,0 +1,6 @@
+package: testclient
+output: client.gen.go
+output-options:
+generate:
+  models: true
+  client: true

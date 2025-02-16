@@ -1,0 +1,53 @@
+version: '3.9'
+services:
+  user_service:
+    container_name: merch_store
+    build:
+      context: .
+      dockerfile: cmd/httpserv/Dockerfile
+    environment:
+      POSTGRES_USER: merch_store_db_user
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: merch_store_db_name
+      POSTGRES_HOST: merch_store_db
+      POSTGRES_PORT: 5432
+
+      JWT_PRIVATE_KEY: not_exactly_a_secret
+      JWT_PUBLIC_KEY: not_exactly_a_secret
+
+      HTTP_SERVICE_HOST: merch_store
+      HTTP_SERVICE_PORT: 8080
+
+      LOG_LEVEL: -4 # slog.LevelDebug
+
+    ports:
+      - "8080:8080"
+    depends_on:
+      merch_store_db:
+        condition: service_healthy
+
+  merch_store_db:
+    image: postgres:17.2-alpine3.21
+    environment:
+      POSTGRES_DB: merch_store_db_name
+      POSTGRES_USER: merch_store_db_user
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - merch_store_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U merch_store_db_user -d merch_store_db_name" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  merch_store_db_migrations:
+    image: migrate/migrate
+    depends_on:
+      merch_store_db:
+        condition: service_healthy
+    volumes:
+      - ./internal/repo/migrations/:/migrations
+    command: [ "-path", "/migrations/", "-database", "postgres://merch_store_db_user:changeme@merch_store_db:5432/merch_store_db_name?sslmode=disable", "up" ]
+
+volumes:
+  merch_store_db_data:

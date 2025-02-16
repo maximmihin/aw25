@@ -1,0 +1,27 @@
+version: 2
+sql:
+  - engine: "postgresql"
+    queries: "queries.sql"
+    schema: "migrations"
+    gen:
+      go:
+        package: "modelsgen"
+        out: "modelsgen"
+        sql_package: "pgx/v5"
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - column: "user_name_inventory.merch_item_quantity"
+            go_type:
+              type: "UserInventoryItem"
+              slice: true
+          - column: "user_name_recipient.sender_amount"
+            go_type:
+              type: "Receive"
+              slice: true
+          - column: "user_name_sender.recipient_amount"
+            go_type:
+              type: "Sent"
+              slice: true

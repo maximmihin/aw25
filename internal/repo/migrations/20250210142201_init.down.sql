@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS merch_ownership;
+DROP TABLE IF EXISTS coin_transfers;
+DROP TABLE IF EXISTS merch;
+DROP TABLE IF EXISTS users;
