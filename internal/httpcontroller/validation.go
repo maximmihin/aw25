@@ -4,6 +4,7 @@ import (
 	"errors"
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/gofiber/fiber/v2"
 	"log/slog"
 )
 
@@ -12,7 +13,7 @@ const (
 	minNameLength = 10
 )
 
-func (request AuthRequest) Validate(log *slog.Logger) *RespErr {
+func (request AuthRequest) Validate(log *slog.Logger) *fiber.Error {
 	rb := request
 	errValid := validation.ValidateStruct(&rb,
 		validation.Field(&rb.Username,
@@ -26,16 +27,16 @@ func (request AuthRequest) Validate(log *slog.Logger) *RespErr {
 		var errValInternal validation.InternalError
 		if errors.As(errValid, &errValInternal) {
 			log.Error("fail to validate input: " + errValInternal.Error())
-			return Err500
+			return fiber.NewError(500)
 		}
 		var errValVal validation.Errors
 		if errors.As(errValid, &errValVal) {
 			log.Info("user sent invalid auth params",
 				slog.Any("invalids params", errValVal),
 			)
-			return NewErrf(400, "invalid user auth parameters: %s", errValVal.Error())
+			return fiber.NewError(400, "invalid user auth parameters: %s", errValVal.Error())
 		}
-		return Err500
+		return fiber.NewError(500)
 	}
 	return nil
 }

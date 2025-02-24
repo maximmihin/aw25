@@ -5,18 +5,16 @@ import (
 	"fmt"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
-	models "github.com/maximmihin/aw25/internal/repo/modelsgen"
+	models "github.com/maximmihin/aw25/internal/dal/modelsgen"
 	"log/slog"
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/maximmihin/aw25/internal/repo"
+	"github.com/maximmihin/aw25/internal/dal"
 )
 
-//go:generate oapi-codegen --config=oapi-codegen.yaml ../../api/v1.yaml
-
 type Handlers struct {
-	Repo   *repo.Repo
+	Dal    *dal.Dal
 	Logger *slog.Logger
 
 	JWTPrivateKey string
@@ -26,7 +24,7 @@ const (
 	welcomeBonusCoins = 1000
 )
 
-var MerchShowCase = map[string]int64{ // TODO hide in repo with cash
+var MerchShowCase = map[string]int64{ // TODO hide in dal with cash
 	"t-shirt":    80,
 	"cup":        20,
 	"book":       50,
@@ -96,14 +94,14 @@ func (r Handlers) Auth(c *fiber.Ctx) error { // TODO add bcrypt check
 
 	var req AuthRequest
 	if err := c.BodyParser(&req); err != nil {
-		return NewErrf(400, "invalid body: "+err.Error())
+		return fiber.NewError(400, "invalid body: "+err.Error())
 	}
 
 	if errValidate := req.Validate(log); errValidate != nil {
 		return errValidate
 	}
 
-	user, err := r.Repo.GetUserByName(ctx, req.Username)
+	user, err := r.Dal.GetUserByName(ctx, req.Username)
 	if err != nil {
 		log.Error("fail to GetUserByName: " + err.Error())
 		return err
@@ -111,7 +109,7 @@ func (r Handlers) Auth(c *fiber.Ctx) error { // TODO add bcrypt check
 
 	if user != nil {
 		if user.Password != req.Password {
-			return NewErrf(401, "wrong password")
+			return fiber.NewError(401, "wrong password")
 		}
 		jwtt, err := newJWT(user.Name, r.JWTPrivateKey)
 		if err != nil {
@@ -121,13 +119,12 @@ func (r Handlers) Auth(c *fiber.Ctx) error { // TODO add bcrypt check
 		return resAuth(c, jwtt)
 	}
 
-	user, err = r.Repo.AddNewUser(ctx, models.CreateUserParams{
+	user, err = r.Dal.AddNewUser(ctx, models.CreateUserParams{
 		Name:     req.Username,
 		Password: req.Password,
 		Coins:    welcomeBonusCoins,
 	})
 	if err != nil {
-		//return fmt.Errorf("fail to add new user AddNewUser: %w", err)
 		log.Error("fail to add new user AddNewUser: " + err.Error())
 		return err
 	}
@@ -145,11 +142,11 @@ func (r Handlers) BuyMerch(c *fiber.Ctx) error {
 
 	merchItem := c.Params("item")
 	if merchItem == "" {
-		return NewErrf(400, repo.ErrInvalidMerchItem.Error())
+		return fiber.NewError(400, dal.ErrInvalidMerchItem.Error())
 	}
 	merchCost, ok := MerchShowCase[merchItem]
 	if !ok {
-		return NewErrf(400, "invalid merch item") // TODO return enum
+		return fiber.NewError(400, "invalid merch item") // TODO return enum
 	}
 
 	userName, err := ExtractUserNameFromJwt(c)
@@ -160,7 +157,7 @@ func (r Handlers) BuyMerch(c *fiber.Ctx) error {
 
 	ctx := c.Context()
 
-	tx, err := r.Repo.PgxPool.Begin(ctx)
+	tx, err := r.Dal.PgxPool.Begin(ctx)
 	if err != nil {
 		log.Error("error via start db transaction: " + err.Error())
 		return err
@@ -171,26 +168,26 @@ func (r Handlers) BuyMerch(c *fiber.Ctx) error {
 		}
 	}()
 
-	txRepo := r.Repo.WithTx(tx)
+	txRepo := r.Dal.WithTx(tx)
 
 	_, err = txRepo.MinusCoins(ctx, userName, merchCost)
 	if err != nil {
-		if errors.Is(err, repo.ErrNotEnoughCoins) {
-			return NewErrf(400, err.Error())
+		if errors.Is(err, dal.ErrNotEnoughCoins) {
+			return fiber.NewError(400, err.Error())
 		}
 		return fmt.Errorf("fail txRepo.MinusCoins: %w", err)
 	}
 
 	_, err = txRepo.AddMerchToUser(ctx, userName, merchItem)
 	if err != nil {
-		if errors.Is(err, repo.ErrInvalidUser) {
-			return NewErrf(400, "user was deleted")
+		if errors.Is(err, dal.ErrInvalidUser) {
+			return fiber.NewError(400, "user was deleted")
 		}
-		if errors.Is(err, repo.ErrInvalidMerchItem) {
+		if errors.Is(err, dal.ErrInvalidMerchItem) {
 			log.Error("fail via AddMerchToUser: " + err.Error()) // this must be checked in code before
-			return NewErrf(400, err.Error())                     // TODO return enum
+			return fiber.NewError(400, err.Error())              // TODO return enum
 		}
-		if errors.Is(err, repo.ErrUserMerchPairExist) {
+		if errors.Is(err, dal.ErrUserMerchPairExist) {
 			log.Error("fail via AddMerchToUser: " +
 				"this method should never have allowed this limitation to be constraint " +
 				err.Error())
@@ -211,7 +208,7 @@ func (r Handlers) CoinTransfer(c *fiber.Ctx) error {
 
 	var req SendCoinRequest
 	if err := c.BodyParser(&req); err != nil {
-		return NewErrf(400, "invalid request body")
+		return fiber.NewError(400, "invalid request body")
 	}
 
 	userName, err := ExtractUserNameFromJwt(c)
@@ -222,7 +219,7 @@ func (r Handlers) CoinTransfer(c *fiber.Ctx) error {
 
 	ctx := c.Context()
 
-	tx, err := r.Repo.PgxPool.Begin(ctx)
+	tx, err := r.Dal.PgxPool.Begin(ctx)
 	if err != nil {
 		log.Error("fail to start tx: " + err.Error())
 		return err
@@ -233,21 +230,21 @@ func (r Handlers) CoinTransfer(c *fiber.Ctx) error {
 		}
 	}()
 
-	txRepo := r.Repo.WithTx(tx)
+	txRepo := r.Dal.WithTx(tx)
 
 	_, err = txRepo.CreateTransfer(ctx, userName, req.ToUser, int64(req.Amount))
 	if err != nil {
-		if errors.Is(err, repo.ErrInternal) {
+		if errors.Is(err, dal.ErrInternal) {
 			log.Error("fail to create transfer: " + err.Error())
 			return err
 		}
-		return NewErrf(400, err.Error())
+		return fiber.NewError(400, err.Error())
 	}
 
 	_, err = txRepo.MinusCoins(ctx, userName, int64(req.Amount))
 	if err != nil {
-		if errors.Is(err, repo.ErrNotEnoughCoins) {
-			return NewErrf(400, err.Error())
+		if errors.Is(err, dal.ErrNotEnoughCoins) {
+			return fiber.NewError(400, err.Error())
 		}
 		return fmt.Errorf("fail txRepo.MinusCoins: %w", err)
 	}
@@ -274,7 +271,7 @@ func (r Handlers) Info(c *fiber.Ctx) error {
 
 	ctx := c.Context()
 
-	userInfo, err := r.Repo.GetCompositeUserInfo(ctx, userName)
+	userInfo, err := r.Dal.GetCompositeUserInfo(ctx, userName)
 	if err != nil {
 		return err
 	}

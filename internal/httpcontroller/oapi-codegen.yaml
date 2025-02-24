@@ -1,10 +1,4 @@
 package: httpcontroller
 generate:
-#  fiber-server: true
   models: true
-#  strict-server: true
-output-options:
-  user-templates:
-    fiber/fiber-middleware.tmpl: ../../pkg/oapi_templates/fiber-middleware.tmpl
-    strict/strict-fiber.tmpl: ../../pkg/oapi_templates/strict-fiber.tmpl
-output: server.gen.go
+output: models.gen.go

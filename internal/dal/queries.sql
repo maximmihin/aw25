@@ -89,6 +89,4 @@ FROM users
          LEFT JOIN user_name_recipient
                    ON users.name = user_name_recipient.user_name
 WHERE name = @ft_user_name
-
--- GROUP BY name, password, coins, user_name_sender.user_name
 ;

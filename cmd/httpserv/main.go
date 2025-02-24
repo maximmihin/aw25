@@ -7,10 +7,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/maximmihin/aw25/internal/dal"
 	handlers "github.com/maximmihin/aw25/internal/httpcontroller"
-	"github.com/maximmihin/aw25/internal/repo"
 	slogfiber "github.com/samber/slog-fiber"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -52,6 +54,7 @@ func main() {
 	}
 }
 
+// log.Info("started listen") is required for waiting func in e2e tests with Docker - add it if reassign
 var merchShopHttpServiceFiberOnListenFunc fiber.OnListenHandler
 
 var merchShopHttpServiceLogger *slog.Logger
@@ -82,7 +85,7 @@ func Run(cfg Config) error {
 	})
 
 	app.Use(slogfiber.NewWithConfig(log, slogfiber.Config{
-		DefaultLevel:       slog.LevelDebug,
+		DefaultLevel:       slog.Level(logLevel),
 		ClientErrorLevel:   slog.LevelDebug,
 		ServerErrorLevel:   slog.LevelDebug,
 		WithUserAgent:      true,
@@ -95,13 +98,19 @@ func Run(cfg Config) error {
 	app.Use(recover.New())
 	app.Use(requestid.New())
 
-	commonRepo, err := repo.New(ctx, cfg.PostgresConnString)
+	dbPool, err := pgxpool.New(ctx, cfg.PostgresConnString)
+	if err != nil {
+		return err
+	}
+	defer dbPool.Close()
+
+	db, err := dal.New(ctx, dbPool)
 	if err != nil {
 		return err
 	}
 
 	h := handlers.Handlers{
-		Repo:          commonRepo,
+		Dal:           db,
 		Logger:        log,
 		JWTPrivateKey: cfg.JwtPrivateKey,
 	}
@@ -112,7 +121,7 @@ func Run(cfg Config) error {
 	secured := api.Group("")
 	secured.Use(jwtware.New(jwtware.Config{
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			return handlers.SendErr(c, 401, "problems with token")
+			return handlers.ResErr(c, 401, "problems with token")
 		},
 		SigningKey: jwtware.SigningKey{Key: []byte(cfg.JwtPublicKey)},
 	}))
@@ -122,24 +131,36 @@ func Run(cfg Config) error {
 
 	if merchShopHttpServiceFiberOnListenFunc != nil {
 		app.Hooks().OnListen(merchShopHttpServiceFiberOnListenFunc)
+	} else {
+		app.Hooks().OnListen(func(data fiber.ListenData) error {
+			log.Info("started listen")
+			return nil
+		})
 	}
 
 	gc := make(chan os.Signal, 1)
 	signal.Notify(gc, os.Interrupt)
 
+	errC := make(chan error, 1)
+
 	go func() {
-		err := app.Listen(fmt.Sprintf("%s:%s", cfg.HttpServiceHost, cfg.HttpServicePort))
+		err = app.Listen(net.JoinHostPort(cfg.HttpServiceHost, cfg.HttpServicePort))
 		if err != nil {
 			log.Error(err.Error())
+			errC <- err
 		}
 	}()
 
-	<-gc
-	err = app.Shutdown()
-	if err != nil {
-		log.Error(err.Error())
+	select {
+	case <-errC:
+	case <-gc:
+	}
+
+	errDown := app.Shutdown()
+	if errDown != nil {
+		log.Error(errDown.Error())
 	}
 	log.Info("gracefully shutdown")
-	return nil
+	return err
 
 }

@@ -1,61 +1,65 @@
-package repo
+package dal
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	models "github.com/maximmihin/aw25/internal/repo/modelsgen"
+	models "github.com/maximmihin/aw25/internal/dal/modelsgen"
 )
 
-//go:generate sqlc generate
+const (
+	pingRetry = 5
+)
 
 type ExtDBTX interface {
 	models.DBTX
 
 	Begin(ctx context.Context) (pgx.Tx, error)
-	//Begin(ctx context.Context) (models.DBTX, error)
 }
 
-type Repo struct {
+type Dal struct {
 	PgxPool ExtDBTX
 	Queries *models.Queries
 	// TODO add timeouts
 }
 
-func New(ctx context.Context, connStr string) (*Repo, error) {
-	dbPool, err := pgxpool.New(ctx, connStr)
+func New(ctx context.Context, pool *pgxpool.Pool) (*Dal, error) {
+
+	var err error
+	for i := 1; i < pingRetry+1; i++ {
+		err = pool.Ping(ctx)
+		if err != nil {
+			time.Sleep(time.Duration(i) * time.Second)
+			continue
+		}
+		break
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	return NewWithPool(ctx, dbPool)
-}
-
-func NewWithPool(ctx context.Context, pool *pgxpool.Pool) (*Repo, error) {
-	err := pool.Ping(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Repo{
+	return &Dal{
 		PgxPool: pool,
 		Queries: models.New(pool),
 	}, nil
 }
 
-func (r Repo) WithTx(tx pgx.Tx) *Repo {
-	return &Repo{
+func (r Dal) WithTx(tx pgx.Tx) *Dal {
+	return &Dal{
 		PgxPool: tx,
 		Queries: r.Queries.WithTx(tx),
 	}
 }
 
-var ErrInternal = errors.New("repo internal error")
+var ErrInternal = errors.New("dal internal error")
 
-func (r Repo) GetUserByName(ctx context.Context, name string) (*models.User, error) {
+func (r Dal) GetUserByName(ctx context.Context, name string) (*models.User, error) {
 	user, err := r.Queries.GetUserByName(ctx, name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -68,7 +72,7 @@ func (r Repo) GetUserByName(ctx context.Context, name string) (*models.User, err
 
 var ErrUserAlreadyExists = errors.New("user already exists")
 
-func (r Repo) AddNewUser(ctx context.Context, createArgs models.CreateUserParams) (*models.User, error) {
+func (r Dal) AddNewUser(ctx context.Context, createArgs models.CreateUserParams) (*models.User, error) {
 	user, err := r.Queries.CreateUser(ctx, createArgs)
 	if err == nil {
 		return &user, nil
@@ -90,7 +94,7 @@ func (r Repo) AddNewUser(ctx context.Context, createArgs models.CreateUserParams
 
 var ErrNotEnoughCoins = errors.New("the user does not have enough coins")
 
-func (r Repo) MinusCoins(ctx context.Context, userName string, amount int64) (*models.User, error) {
+func (r Dal) MinusCoins(ctx context.Context, userName string, amount int64) (*models.User, error) {
 	user, err := r.Queries.MinusUserCoins(ctx, models.MinusUserCoinsParams{
 		Amount: amount,
 		Name:   userName,
@@ -109,7 +113,7 @@ func (r Repo) MinusCoins(ctx context.Context, userName string, amount int64) (*m
 	return nil, fmt.Errorf("%w: unexepted error: %w", ErrInternal, err)
 }
 
-func (r Repo) PlusCoins(ctx context.Context, userName string, amount int64) (*models.User, error) {
+func (r Dal) PlusCoins(ctx context.Context, userName string, amount int64) (*models.User, error) {
 	user, err := r.Queries.PlusUserCoins(ctx, models.PlusUserCoinsParams{
 		Amount: amount,
 		Name:   userName,
@@ -124,7 +128,7 @@ var ErrInvalidUser = errors.New("invalid user")
 var ErrInvalidMerchItem = errors.New("invalid merch item")
 var ErrUserMerchPairExist = errors.New("user - merch pair already exists")
 
-func (r Repo) AddMerchToUser(ctx context.Context, userName string, merchName string) (*models.MerchOwnership, error) {
+func (r Dal) AddMerchToUser(ctx context.Context, userName string, merchName string) (*models.MerchOwnership, error) {
 	merchOwn, err := r.Queries.AddMerchItem(ctx, models.AddMerchItemParams{
 		UserName:  userName,
 		MerchItem: merchName,
@@ -151,7 +155,7 @@ var ErrNonPositiveAmount = errors.New("transfer amount must be positive number")
 var ErrInvalidSender = errors.New("invalid sender")
 var ErrInvalidRecipient = errors.New("invalid recipient")
 
-func (r Repo) CreateTransfer(ctx context.Context, sender, recipient string, amount int64) (*models.CoinTransfer, error) {
+func (r Dal) CreateTransfer(ctx context.Context, sender, recipient string, amount int64) (*models.CoinTransfer, error) {
 	transfer, err := r.Queries.CreateTransfer(ctx, models.CreateTransferParams{
 		Sender:    sender,
 		Recipient: recipient,
@@ -176,7 +180,7 @@ func (r Repo) CreateTransfer(ctx context.Context, sender, recipient string, amou
 	return nil, fmt.Errorf("%w: unexepted error: %w", ErrInternal, err)
 }
 
-func (r Repo) GetCompositeUserInfo(ctx context.Context, userName string) (*models.UserInfo, error) {
+func (r Dal) GetCompositeUserInfo(ctx context.Context, userName string) (*models.UserInfo, error) {
 	tmpInfo, err := r.Queries.GetCompositeUserIndo(ctx, userName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

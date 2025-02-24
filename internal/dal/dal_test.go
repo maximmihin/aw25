@@ -1,19 +1,20 @@
-package repo
+package dal
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/golang-migrate/migrate/v4/source/github"
-	models "github.com/maximmihin/aw25/internal/repo/modelsgen"
+	"github.com/jackc/pgx/v5/pgxpool"
+	models "github.com/maximmihin/aw25/internal/dal/modelsgen"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
-	"os"
+	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -30,19 +31,18 @@ const (
 	defCoins = 1000
 )
 
-var globalTestModeIsDev = false
-
 func TestIntegration(t *testing.T) {
 
-	require.NoError(t, os.Setenv("INTEGRATION_DEV_MODE", "true")) // TODO
-
-	globalTestModeIsDev = os.Getenv("INTEGRATION_DEV_MODE") == "true"
-
-	pgConnStr := RunPostgresContainer(t)
+	pgConnStr, _ := RunDockerPostgres(t)
 	PostgresPrepare(t, pgConnStr)
 
-	ctx := context.TODO()
-	repo, err := New(ctx, pgConnStr)
+	ctx := t.Context()
+
+	pgxPool, err := pgxpool.New(ctx, pgConnStr)
+	require.NoError(t, err)
+	t.Cleanup(pgxPool.Close)
+
+	repo, err := New(ctx, pgxPool)
 	require.NoError(t, err)
 
 	t.Run("AddNewUser", func(t *testing.T) {
@@ -195,8 +195,8 @@ INSERT INTO coin_transfers (sender, recipient, amount) VALUES ('user22_teste2e_i
 
 }
 
-func RunPostgresContainer(t *testing.T) string {
-	ctx := context.Background()
+func RunDockerPostgres(t *testing.T) (localhostConnStr, dockerBridgeConnStr string) {
+	ctx := t.Context()
 
 	pgCtrName := fmt.Sprintf("merchStore_%s_Postgres", NameTestInSnakeCase(t))
 
@@ -205,31 +205,65 @@ func RunPostgresContainer(t *testing.T) string {
 		postgres.WithUsername(DbUser),
 		postgres.WithPassword(DbPass),
 
+		withName(pgCtrName),
+
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
 				WithStartupTimeout(10 * time.Second)),
 	}
 
-	if globalTestModeIsDev {
-		require.NoError(t, os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true"))
-		ctrRunOpts = append(ctrRunOpts, withStayAliveAs(pgCtrName))
-	}
-
+	defer func() {
+		handleFknPanicTestContainers(t, recover())
+	}()
+	t.Logf("starting %s...", pgCtrName)
 	pgContainer, err := postgres.Run(ctx,
 		"postgres:17.2-alpine3.21",
 		ctrRunOpts...,
 	)
+	// TODO add cleanup terminate container
 	require.NoError(t, err)
 	t.Logf("started %s", pgCtrName)
 
-	// TODO add info about container port in log
-	// TODO add info was new container created or reuse old
-	connStr := pgContainer.MustConnectionString(ctx, "sslmode=disable")
-	t.Cleanup(func() {
-		t.Logf("%sdon't forget: docker rm -f %s%s", yellow, pgCtrName, resetColor)
-	})
-	return connStr
+	localhostConnStr, err = pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	ctrBridgeIP, err := pgContainer.ContainerIP(t.Context()) // not robust code
+	// it is assumed that the container is running only in the default docker network (bridge)
+	require.NoError(t, err)
+
+	// create connString for internal network (docker bridge)
+	publicPgUrl, err := url.Parse(localhostConnStr)
+	require.NoError(t, err)
+	internalPgUrl := *publicPgUrl
+	internalPgUrl.Host = net.JoinHostPort(ctrBridgeIP, "5432")
+	dockerBridgeConnStr = internalPgUrl.String()
+
+	t.Logf("postgres available on: \n - %s\n - %s (default docker bridge network)",
+		publicPgUrl.Host, internalPgUrl.Host)
+
+	return localhostConnStr, dockerBridgeConnStr
+}
+
+func withName(ctrName string) testcontainers.CustomizeRequestOption {
+	return func(req *testcontainers.GenericContainerRequest) error {
+		req.Name = ctrName
+		return nil
+	}
+}
+
+func handleFknPanicTestContainers(t *testing.T, some any) {
+	if some == nil {
+		return
+	}
+	err, ok := some.(error)
+	if !ok {
+		t.Fatal("testcontainers doesnt run for some reason: ", some)
+	}
+	if err.Error() == "rootless Docker not found" {
+		t.Fatal("need running docker on host for run e2e tests - testcontainers will create and launch the necessary containers automatically")
+	}
+	t.Fatal("testcontainers fail to connect to docker on host: " + err.Error())
 }
 
 func PostgresPrepare(t *testing.T, connStr string) {
